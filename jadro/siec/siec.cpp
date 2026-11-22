@@ -222,6 +222,8 @@ constexpr uint64_t PING_TIMEOUT_MS = 4000;
 constexpr uint64_t DNS_TIMEOUT_MS = 4000;
 constexpr uint64_t TCP_CONNECT_TIMEOUT_MS = 5000;
 constexpr uint64_t HTTP_TIMEOUT_MS = 12000;
+/* Limit challenge ACK na RST spoza RCV.NXT (RFC 5961 sekcja 7). */
+constexpr uint64_t TCP_CHALLENGE_ACK_ODSTEP_MS = 100;
 
 uint64_t deadline_ms(uint64_t odstep) {
     const uint64_t teraz = czas_monotoniczny_ms();
@@ -5435,6 +5437,64 @@ void obsluz_tcp(
 
     if ((flagi &
          TCP_FLAG_RST) != 0) {
+
+        if (stan_tcp ==
+            StanTCP::SYN_WYSLANY) {
+
+            /*
+             * RFC 9293 3.10.7.3: w SYN-SENT RST jest wazny tylko z ACK
+             * potwierdzajacym nasz SYN (ack == ISS+1). Bez ACK - ignoruj.
+             */
+            if ((flagi &
+                 TCP_FLAG_ACK) == 0 ||
+                ack !=
+                    tcp_nasz_seq + 1U) {
+
+                return;
+            }
+        } else if (stan_tcp ==
+                       StanTCP::USTANOWIONY ||
+                   stan_tcp ==
+                       StanTCP::FIN_WYSLANY) {
+
+            /*
+             * RFC 5961 3.2: RST zamyka sesje tylko gdy SEQ == RCV.NXT.
+             * SEQ w oknie, ale nie dokladny -> challenge ACK (z limitem,
+             * RFC 5961 7); SEQ poza oknem -> cicho odrzuc.
+             */
+            if (seq !=
+                tcp_nasz_ack) {
+
+                if (seq - tcp_nasz_ack <
+                    static_cast<uint32_t>(
+                        TCP_OKNO)) {
+
+                    static uint64_t ostatni_challenge_ms =
+                        0;
+
+                    const uint64_t teraz =
+                        czas_monotoniczny_ms();
+
+                    if (ostatni_challenge_ms == 0 ||
+                        teraz - ostatni_challenge_ms >=
+                            TCP_CHALLENGE_ACK_ODSTEP_MS) {
+
+                        ostatni_challenge_ms =
+                            teraz;
+
+                        (void)tcp_wyslij_internal(
+                            TCP_FLAG_ACK,
+                            nullptr,
+                            0
+                        );
+                    }
+                }
+
+                return;
+            }
+        } else {
+            return;
+        }
 
         tcp_rst_odebrany =
             true;
