@@ -2140,8 +2140,8 @@ void instaluj_wbudowane_programy() {
         if (scisla_instalacja) pliki_instalacja_ok = false;
     }
 
-    const char manifest440[] = "nazwa = \"PCM 440 Hz\"\nautor = \"Bursztyn OS\"\nwersja = \"1.0\"\npoziom_zaufania = 4\nplik_startowy = \"pcm440.bur\"\nuprawnienia = [\"okna\"]\n";
-    const char manifest660[] = "nazwa = \"PCM 660 Hz\"\nautor = \"Bursztyn OS\"\nwersja = \"1.0\"\npoziom_zaufania = 4\nplik_startowy = \"pcm660.bur\"\nuprawnienia = [\"okna\"]\n";
+    static const char manifest440[] = "nazwa = \"PCM 440 Hz\"\nautor = \"Bursztyn OS\"\nwersja = \"1.0\"\npoziom_zaufania = 4\nplik_startowy = \"pcm440.bur\"\nuprawnienia = [\"okna\"]\n";
+    static const char manifest660[] = "nazwa = \"PCM 660 Hz\"\nautor = \"Bursztyn OS\"\nwersja = \"1.0\"\npoziom_zaufania = 4\nplik_startowy = \"pcm660.bur\"\nuprawnienia = [\"okna\"]\n";
     if (!instaluj_paczke("/programy/pcm440.cebula/opis.aplikacji", manifest440,
         "/programy/pcm440.cebula/pcm440.bur", _binary_pcm440_bin_bz_start, _binary_pcm440_bin_bz_end)) pliki_instalacja_ok = false;
     if (!instaluj_paczke("/programy/pcm660.cebula/opis.aplikacji", manifest660,
