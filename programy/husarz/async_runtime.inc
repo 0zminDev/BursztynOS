@@ -206,20 +206,25 @@ void finish_resource_task(const Husarz::ResourceTask &task,Husarz::ResourceEntry
         if(task.script>=Husarz::StorageOrigins){co_return;}auto *s=Husarz::browser_storage.local[task.script];if(!s){co_return;}auto &p=*state.payload;
         if(task.kind==Husarz::RequestKind::StorageRead){
             s->loading=false;co_await Husarz::WorkPoint{256};
-            if(p.success&&p.size<=Husarz::StorageDiskCapacity&&Husarz::storage_decode(*s,p.raw,p.size,s->origin))s->loaded=true;else {s->loaded=true;s->failed=true;}
+            // Pamiec wspoldzielona z workerem: rozmiar czytany raz (bez okna TOCTOU).
+            const uint32_t rozmiar=__atomic_load_n(&p.size,__ATOMIC_RELAXED);
+            if(p.success&&rozmiar<=Husarz::StorageDiskCapacity&&rozmiar<=sizeof(p.raw)&&Husarz::storage_decode(*s,p.raw,rozmiar,s->origin))s->loaded=true;else {s->loaded=true;s->failed=true;}
         }else {s->saving=false;if(p.success)s->saved=task.storage_revision;else s->failed=true;}co_return;
     }
     auto *z=task_tab(task);
     if (!z) { ++state.queue.discarded; resource_debug("discard",&task); co_return; }
     auto &payload=*state.payload;
     if(z->dokument){HUSARZ_COUNT(*z->dokument,resource_completions,1);}
+    // payload lezy w pamieci RW wspoldzielonej z workerem, ktory parsuje niezaufane dane.
+    // Rozmiar czytamy dokladnie raz: przejety worker nie moze go zmienic po sprawdzeniu.
+    const uint32_t rozmiar=__atomic_load_n(&payload.size,__ATOMIC_RELAXED);
     if (payload.magic!=Husarz::AsyncMagic || payload.request!=task.request || payload.kind!=uint32_t(task.kind) ||
-        payload.size>(task.kind==Husarz::RequestKind::Font?Husarz::AsyncFontCapacity:sizeof(payload.raw))) {
+        rozmiar>(task.kind==Husarz::RequestKind::Font?Husarz::AsyncFontCapacity:sizeof(payload.raw))) {
         ++state.queue.discarded; co_return;
     }
     ++state.queue.completed;
     resource_debug("complete",&task);
-    if (task.kind==Husarz::RequestKind::Font) { webfont_apply(task,payload); co_return; }
+    if (task.kind==Husarz::RequestKind::Font) { webfont_apply(task,payload,rozmiar); co_return; }
     if (task.kind==Husarz::RequestKind::Html) {
         if (!payload.success) ustaw_tresc(*z,"Nie udało się pobrać strony.",false);
         else {
@@ -227,7 +232,7 @@ void finish_resource_task(const Husarz::ResourceTask &task,Husarz::ResourceEntry
             auto *scratch=new Scratch; if (!scratch) co_return;
             bool redirect=false;
             if (parsuj_url(task.url,&scratch->parsed)) consume_http_response(*z,&redirect,scratch->redirect,scratch->parsed,
-                reinterpret_cast<const char*>(payload.raw),payload.size,payload.trusted!=0);
+                reinterpret_cast<const char*>(payload.raw),rozmiar,payload.trusted!=0);
             if (redirect && task.redirects<MAX_PRZEKIEROWAN) {
                 auto *next=new Husarz::ResourceTask(task);
                 if (next) { ++next->redirects; kopiuj_limit(next->url,sizeof(next->url),scratch->redirect);
@@ -248,9 +253,9 @@ void finish_resource_task(const Husarz::ResourceTask &task,Husarz::ResourceEntry
             Husarz::ResourceEntry *entry{};
             ~PendingImage(){if(entry && entry->cache && !entry->refs && !entry->pixels)entry->cache->remove(*entry);}
         } pending_image;
-        if (payload.success && cache && (payload.size||task.kind==Husarz::RequestKind::Fetch) && payload.size<=Husarz::MaxResourceBytes) {
+        if (payload.success && cache && (rozmiar||task.kind==Husarz::RequestKind::Fetch) && rozmiar<=Husarz::MaxResourceBytes) {
             auto type=Husarz::resource_type(task.kind);
-            entry=cache->insert(task.url,type,payload.raw,payload.size,gui_czas_monotoniczny_ns());
+            entry=cache->insert(task.url,type,payload.raw,rozmiar,gui_czas_monotoniczny_ns());
             if(entry) {
                 kopiuj_limit(entry->source_url,sizeof(entry->source_url),payload.url);
                 kopiuj_limit(entry->content_type,sizeof(entry->content_type),payload.content_type);
