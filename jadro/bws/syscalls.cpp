@@ -1938,16 +1938,41 @@ __attribute__((noinline)) uint64_t bws_uruchom_impl(
     // Walidacja manifestu opis.aplikacji z paczki .cebula
     PakietManifest manifest{};
     if (!delegowane && pakiet_wczytaj_manifest(sciezka, &manifest)) {
-        if (manifest.poziom_zaufania < PZB_UZYTKOWNIK || (manifest.uprawnienia & PRAWO_SYSTEM_CONFIG)) {
+        const bool podwyzszenie = manifest.poziom_zaufania < PZB_UZYTKOWNIK ||
+            (manifest.uprawnienia & PRAWA_UPRZYWILEJOWANE) != 0;
+        if (podwyzszenie) {
             if (!pzb_ma_co_najmniej_poziom(&rodzic, PZB_ZAUFANE) ||
                 !pzb_ma_prawa(&rodzic, PRAWO_SYSTEM_CONFIG)) {
                 kod = uruchamianie::BLAD_ZAUFANIE;
                 return 0;
             }
+            /*
+             * Manifest nie jest podpisany, wiec podwyzszone zaufanie honorujemy
+             * tylko dla paczek z drzew chronionych przed zapisem (/programy, /gry),
+             * ktorych zwykly proces nie moze podmienic. .cebula w katalogu
+             * uzytkownika z "poziom_zaufania = 0" nie dostaje nic ponad PZB 4.
+             */
+            if (!sciezka_kanoniczna(sciezka) || !sciezka_chroniona(sciezka)) {
+                kod = uruchamianie::BLAD_ZAUFANIE;
+                return 0;
+            }
         }
-        poziom_dziecka = manifest.poziom_zaufania;
-        wymagane = manifest.uprawnienia;
-        prawa_dziecka |= manifest.uprawnienia;
+        /*
+         * Dziecko nigdy nie jest bardziej zaufane niz rodzic (ani niz PZB 4 dla
+         * zwyklej paczki), a sandbox nie wychodzi z piaskownicy przez manifest.
+         */
+        const uint8_t minimalny_poziom = podwyzszenie ? rodzic.poziom_zaufania : poziom_dziecka;
+        poziom_dziecka = manifest.poziom_zaufania > minimalny_poziom
+            ? manifest.poziom_zaufania : minimalny_poziom;
+        /*
+         * Prawa uprzywilejowane tylko, jesli rodzic sam je posiada. Sandbox
+         * dostaje wylacznie czesc wspolna praw rodzica i manifestu.
+         */
+        uint64_t z_manifestu = manifest.uprawnienia &
+            (~static_cast<uint64_t>(PRAWA_UPRZYWILEJOWANE) | znane_prawa(rodzic));
+        if (rodzic.poziom_zaufania >= PZB_PIASKOWNICA) z_manifestu &= znane_prawa(rodzic);
+        wymagane = z_manifestu;
+        prawa_dziecka |= z_manifestu;
     }
     if(!delegowane && rowna_sciezka(sciezka,"/programy/aktualizacje.cebula/aktualizacje.bur")) {
 #if BURSZTYN_OTA_TRACE
