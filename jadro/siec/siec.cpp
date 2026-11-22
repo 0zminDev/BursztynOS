@@ -189,9 +189,6 @@ constexpr uint16_t PORT_HTTP =
 constexpr uint16_t PORT_EPHEMERAL_MIN =
     49152U;
 
-constexpr uint16_t PORT_EPHEMERAL_START =
-    50000U;
-
 constexpr uint8_t TCP_FLAG_FIN =
     0x01U;
 
@@ -1163,9 +1160,6 @@ bool konfiguracja_ipv4_gotowa =
 uint16_t kolejny_ipv4_id =
     1;
 
-uint16_t nastepny_port_ephemeral =
-    PORT_EPHEMERAL_START;
-
 uint32_t dhcp_xid =
     UINT32_C(0xB0550001);
 
@@ -1331,37 +1325,6 @@ bool siec_losowy_port(
     }
 
     return false;
-}
-
-uint16_t przydziel_port(
-    uint16_t* licznik,
-    uint16_t poczatek
-) {
-    if (!licznik) {
-        return poczatek;
-    }
-
-    uint16_t wynik =
-        *licznik;
-
-    ++(*licznik);
-
-    if (*licznik <
-            PORT_EPHEMERAL_MIN ||
-        *licznik == 0) {
-
-        *licznik =
-            poczatek;
-    }
-
-    if (wynik <
-        PORT_EPHEMERAL_MIN) {
-
-        wynik =
-            poczatek;
-    }
-
-    return wynik;
 }
 
 uint16_t przydziel_ipv4_id() {
@@ -3467,7 +3430,7 @@ uint32_t tcp_nasz_ack =
     0;
 
 uint16_t tcp_nasz_port =
-    PORT_EPHEMERAL_START;
+    0;
 
 uint16_t tcp_cel_port =
     PORT_HTTP;
@@ -3508,29 +3471,19 @@ uint32_t tcp_gniazdo_poczatek =
 uint32_t tcp_gniazdo_koniec =
     0;
 
-uint32_t tcp_poczatkowy_seq() {
+bool tcp_poczatkowy_seq(
+    uint32_t* isn
+) {
     /*
-     * Prosty ISN, nie kryptograficzny. Dla obecnego pojedynczego stosu
-     * wystarcza do unikniecia stalego 1000 pomiedzy kolejnymi polaczeniami.
+     * ISN w calosci z CSPRNG (RFC 6528 dopuszcza losowy ISN; RFC 9293
+     * 3.4.1). Przewidywalny ISN pozwalal wstrzykiwac dane/RST w sesje
+     * bez podsluchu. Bez entropii nie otwieramy polaczenia.
      */
-    static uint32_t licznik =
-        UINT32_C(0x31415926);
-
-    licznik +=
-        UINT32_C(0x1021);
-
-    const uint8_t* mac =
-        pobierz_mac_adres();
-
-    if (mac) {
-        licznik ^=
-            (static_cast<uint32_t>(
-                 mac[4]) << 8) |
-            static_cast<uint32_t>(
-                mac[5]);
-    }
-
-    return licznik;
+    return
+        siec_losowe(
+            isn,
+            sizeof(*isn)
+        );
 }
 
 void tcp_wyczysc_bufor_gniazda() {
@@ -3817,14 +3770,37 @@ bool tcp_przygotuj_polaczenie(
     tcp_cel_port =
         port;
 
-    tcp_nasz_port =
-        przydziel_port(
-            &nastepny_port_ephemeral,
-            PORT_EPHEMERAL_START
+    /*
+     * Losowy port efemeryczny (RFC 6056) i losowy ISN. Port rozny od
+     * poprzedniej sesji, zeby spoznione segmenty starego polaczenia
+     * nie trafily do nowego. Brak entropii = brak polaczenia.
+     */
+    uint16_t nowy_port =
+        0;
+
+    uint32_t isn =
+        0;
+
+    if (!siec_losowy_port(
+            tcp_nasz_port,
+            &nowy_port) ||
+        !tcp_poczatkowy_seq(
+            &isn)) {
+
+        wypisz_log("[TCP] Brak entropii z CSPRNG - polaczenie odrzucone.");
+
+        tcp_resetuj_sesje(
+            true
         );
 
+        return false;
+    }
+
+    tcp_nasz_port =
+        nowy_port;
+
     tcp_nasz_seq =
-        tcp_poczatkowy_seq();
+        isn;
 
     tcp_nasz_ack =
         0;
