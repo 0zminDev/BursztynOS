@@ -8,6 +8,7 @@
 #include "virtio_input_activation_diag.h"
 #include "diagnostyka_klatek_startu.h"
 #include "sterowniki/czas/hpet.h"
+#include "jadro/mm/zarezerwowane_va.h"
 
 #ifdef BURSZTYN_VIRTIO_HOST_TEST
 #include <cstdio>
@@ -93,6 +94,8 @@ static inline void virtio_write32(volatile void* addr, uint32_t val) {
 }
 
 constexpr uint32_t MAX_VIRTIO_DEVICES = 16U;
+// Gorny limit pojedynczego BAR-u z capabilities virtio (common/notify/ISR/device cfg, MSI-X).
+constexpr uint64_t VIRTIO_PCI_MAKS_ROZMIAR_BAR = 64ULL * 1024ULL * 1024ULL;
 VirtioPciDevice g_virtio_devices[MAX_VIRTIO_DEVICES]{};
 uint32_t g_virtio_device_count = 0;
 
@@ -318,6 +321,15 @@ bool virtio_pci_map_bar(uint8_t bus, uint8_t slot, uint8_t func,
     if (mask64 == 0 || phys_addr == 0) return false;
     const uint64_t bar_size = ~mask64 + 1U;
     if (bar_size == 0) return false;
+    /*
+     * Rozmiar i adres pochodza od urzadzenia, a BAR mapujemy VA == PA w tablicach jadra
+     * jeszcze przed pierwszym procesem (bez kontroli okien w VMM). Bez limitu BAR "2^40"
+     * zjadal pamiec na tablice stron, a BAR polozony na oknie jadra (sterta, RAM dysk PSF,
+     * okno xHCI...) podmienialby jego PTE na MMIO urzadzenia. Regiony virtio sa male.
+     */
+    if (bar_size > VIRTIO_PCI_MAKS_ROZMIAR_BAR || (bar_size & (bar_size - 1U)) != 0) return false;
+    if (bar_size > UINT64_MAX - phys_addr) return false;
+    if (ZarezerwowaneVA::koliduje_z_jadrem(phys_addr, phys_addr + bar_size)) return false;
 
 #ifdef BURSZTYN_VIRTIO_HOST_TEST
     volatile uint8_t* vaddr = bar_map_impl(bar_idx, phys_addr, bar_size);
