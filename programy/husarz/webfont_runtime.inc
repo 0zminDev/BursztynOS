@@ -169,13 +169,14 @@ void webfont_queue(Zakladka &z, unsigned index) {
     delete s;
     webfont_failed(z, index);
 }
-// Worker result for a Font task (payload validated by the caller).
-void webfont_apply(const Husarz::ResourceTask &task, const Husarz::WorkerPayload &payload) {
+// Worker result for a Font task (payload validated by the caller). size is the caller's
+// single read of payload.size: the payload is shared memory the worker can still write.
+void webfont_apply(const Husarz::ResourceTask &task, const Husarz::WorkerPayload &payload, size_t size) {
     auto *z = task_tab(task);
     if (!z || !z->fonts || z->fonts->navigation != task.navigation || task.node >= z->fonts->count) return;
     auto &f = z->fonts->faces[task.node];
     if (f.state != WebFontQueued) return;
-    bool ok = payload.success && payload.size >= 12 && payload.size <= Husarz::AsyncFontCapacity;
+    bool ok = payload.success && size >= 12 && size <= Husarz::AsyncFontCapacity;
     if (ok && !Husarz::font_cors_allowed(z->url, payload.url[0] ? payload.url : task.url, payload.allow_origin)) {
         webfonts_debug("font-error", "CORS_DENIED");
         ++webfont_counters.cors_denied;
@@ -183,18 +184,18 @@ void webfont_apply(const Husarz::ResourceTask &task, const Husarz::WorkerPayload
     }
 #if HUSARZ_WEBFONTS
     if (ok) {
-        auto *bytes = new uint8_t[payload.size];
+        auto *bytes = new uint8_t[size];
         uint32_t id = 0;
         if (bytes) {
             const uint8_t *from = Husarz::font_area(payload);
-            for (size_t i = 0; i < payload.size; ++i) bytes[i] = from[i];
+            for (size_t i = 0; i < size; ++i) bytes[i] = from[i];
             BSF::ScopedDescriptor desc;
             desc.weight_min = f.desc.weight_min; desc.weight_max = f.desc.weight_max;
             desc.stretch = f.desc.stretch; desc.italic = f.desc.italic; desc.range_count = f.desc.range_count;
             for (unsigned r = 0; r < f.desc.range_count && r < BSF::MaxScopedRanges; ++r) {
                 desc.ranges[r][0] = f.desc.ranges[r][0]; desc.ranges[r][1] = f.desc.ranges[r][1];
             }
-            id = BSF::register_scoped_face(z->fonts->scope, f.family, desc, bytes, payload.size);
+            id = BSF::register_scoped_face(z->fonts->scope, f.family, desc, bytes, size);
             if (!id) delete[] bytes; // ownership passes to BSF only on success
         }
         if (id) {

@@ -3459,7 +3459,7 @@ Husarz::ResourceEntry *fetch_browser_resource(const char *url,Husarz::ResourceTy
     }
     return entry;
 }
-void webfont_apply(const Husarz::ResourceTask &,const Husarz::WorkerPayload &);
+void webfont_apply(const Husarz::ResourceTask &,const Husarz::WorkerPayload &,size_t);
 void queue_fonts(Zakladka &);
 #include "../husarz/worker.inc"
 #include "../husarz/async_runtime.inc"
