@@ -67,6 +67,11 @@
 #define BURSZTYN_DEBUG_DNS_RAW 0
 #endif
 
+/* Log kazdego pakietu ARP trafiajacego do cache (tylko diagnostyka). */
+#ifndef BURSZTYN_DEBUG_ARP
+#define BURSZTYN_DEBUG_ARP 0
+#endif
+
 /* =========================================================================
  * 1. API ZEWNĘTRZNE
  * ========================================================================= */
@@ -4662,7 +4667,10 @@ void obsluz_arp(
         arp->nadawca_ip,
         arp->nadawca_mac
     );
+#if BURSZTYN_DEBUG_ARP
+    /* Log na kazdy pakiet ARP - tylko w buildzie diagnostycznym. */
     wypisz_ip_log("[ARP] reply/cache ip=", arp->nadawca_ip);
+#endif
 
     if (!konfiguracja_ipv4_gotowa ||
         !ip_rowne(
