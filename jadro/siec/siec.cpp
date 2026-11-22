@@ -692,6 +692,23 @@ bool ip_jest_multicast(
         ip[0] <= 239U;
 }
 
+/*
+ * Adres nadajacy sie na nasz wlasny IPv4 z DHCP: odrzucamy 0.0.0.0/8,
+ * loopback 127/8, multicast 224/4 oraz 240/4 (w tym 255.255.255.255).
+ */
+bool ip_jest_unicast_hosta(
+    const uint8_t ip[4]
+) {
+    if (!ip) {
+        return false;
+    }
+
+    return
+        ip[0] != 0U &&
+        ip[0] != 127U &&
+        ip[0] < 224U;
+}
+
 bool mac_jest_broadcast(
     const uint8_t mac[6]
 ) {
@@ -1160,8 +1177,41 @@ bool konfiguracja_ipv4_gotowa =
 uint16_t kolejny_ipv4_id =
     1;
 
+/* XID losowany z CSPRNG dla kazdej transakcji DHCP (uruchom_klienta_dhcp). */
 uint32_t dhcp_xid =
-    UINT32_C(0xB0550001);
+    0;
+
+/*
+ * Stan klienta DHCP. OFFER przyjmujemy tylko w DISCOVER, ACK/NAK tylko
+ * w REQUEST. Po ZWIAZANY kolejne (niezamowione) ACK sa ignorowane.
+ */
+enum class StanDHCP : uint8_t {
+    BEZCZYNNY = 0,
+    DISCOVER,
+    REQUEST,
+    ZWIAZANY
+};
+
+StanDHCP dhcp_stan =
+    StanDHCP::BEZCZYNNY;
+
+void dhcp_ustaw_stan(
+    StanDHCP stan
+) {
+    __atomic_store_n(
+        &dhcp_stan,
+        stan,
+        __ATOMIC_RELEASE
+    );
+}
+
+StanDHCP dhcp_pobierz_stan() {
+    return
+        __atomic_load_n(
+            &dhcp_stan,
+            __ATOMIC_ACQUIRE
+        );
+}
 
 uint8_t dhcp_offer_ip[4] = {};
 uint8_t dhcp_offer_serwer[4] = {};
@@ -2346,6 +2396,10 @@ extern "C" void uruchom_klienta_dhcp() {
 
     wyczysc_cache_arp();
 
+    dhcp_ustaw_stan(
+        StanDHCP::BEZCZYNNY
+    );
+
     dhcp_otrzymano_offer =
         false;
 
@@ -2355,27 +2409,36 @@ extern "C" void uruchom_klienta_dhcp() {
     dhcp_otrzymano_nak =
         false;
 
+    wyzeruj(
+        dhcp_offer_serwer,
+        sizeof(dhcp_offer_serwer)
+    );
+
     /*
-     * XID rozni sie pomiedzy kolejnymi probami i zalezy od MAC.
-     * Nie jest kryptograficzny - ma jedynie korelowac sesje DHCP.
+     * XID losowy dla kazdej transakcji (RFC 2131 4.4.1). Przewidywalny XID
+     * pozwalal wstrzyknac falszywy OFFER/ACK bez podsluchu. Bez entropii
+     * nie startujemy DHCP (fail-closed).
      */
-    const uint8_t* mac =
-        pobierz_mac_adres();
+    uint32_t nowy_xid =
+        0;
 
-    dhcp_xid +=
-        UINT32_C(0x00010001);
+    if (!siec_losowe(
+            &nowy_xid,
+            sizeof(nowy_xid))) {
 
-    if (mac) {
-        dhcp_xid ^=
-            (static_cast<uint32_t>(
-                 mac[2]) << 24) |
-            (static_cast<uint32_t>(
-                 mac[3]) << 16) |
-            (static_cast<uint32_t>(
-                 mac[4]) << 8) |
-            static_cast<uint32_t>(
-                mac[5]);
+        wypisz_log(
+            "[DHCP] Brak entropii z CSPRNG - DHCP nie wystartuje."
+        );
+
+        return;
     }
+
+    dhcp_xid =
+        nowy_xid;
+
+    dhcp_ustaw_stan(
+        StanDHCP::DISCOVER
+    );
 
     if (!wyslij_dhcp_internal(
             DHCP_DISCOVER,
@@ -2384,6 +2447,10 @@ extern "C" void uruchom_klienta_dhcp() {
 
         wypisz_log(
             "[DHCP] Nie udalo sie wyslac DISCOVER."
+        );
+
+        dhcp_ustaw_stan(
+            StanDHCP::BEZCZYNNY
         );
 
         return;
@@ -2412,11 +2479,23 @@ extern "C" void uruchom_klienta_dhcp() {
             "[DHCP] Timeout oczekiwania na DHCPOFFER."
         );
 
+        dhcp_ustaw_stan(
+            StanDHCP::BEZCZYNNY
+        );
+
         return;
     }
 
     wypisz_log(
         "[DHCP] DHCPOFFER odebrany, wysylam DHCPREQUEST..."
+    );
+
+    /*
+     * Od teraz ignorujemy kolejne OFFER; ACK/NAK przyjmujemy tylko
+     * od serwera wybranego w OFFER (option 54).
+     */
+    dhcp_ustaw_stan(
+        StanDHCP::REQUEST
     );
 
     if (!wyslij_dhcp_internal(
@@ -2426,6 +2505,10 @@ extern "C" void uruchom_klienta_dhcp() {
 
         wypisz_log(
             "[DHCP] Nie udalo sie wyslac DHCPREQUEST."
+        );
+
+        dhcp_ustaw_stan(
+            StanDHCP::BEZCZYNNY
         );
 
         return;
@@ -2456,6 +2539,10 @@ extern "C" void uruchom_klienta_dhcp() {
         wypisz_log(
             "[DHCP] Serwer odrzucil konfiguracje (DHCPNAK)."
         );
+
+        dhcp_ustaw_stan(
+            StanDHCP::BEZCZYNNY
+        );
         powiadomienie_systemowe(BWS_POW_OSTRZEZENIE, "Sieć bez konfiguracji",
                                 "Serwer DHCP odrzucił konfigurację.");
 
@@ -2468,6 +2555,10 @@ extern "C" void uruchom_klienta_dhcp() {
 
         wypisz_log(
             "[DHCP] Timeout oczekiwania na DHCPACK."
+        );
+
+        dhcp_ustaw_stan(
+            StanDHCP::BEZCZYNNY
         );
         powiadomienie_systemowe(BWS_POW_OSTRZEZENIE, "Sieć bez konfiguracji",
                                 "Brak potwierdzenia adresu z DHCP.");
@@ -4971,10 +5062,26 @@ void obsluz_dhcp(
     const uint8_t* yiaddr =
         payload + 16;
 
+    const StanDHCP stan =
+        dhcp_pobierz_stan();
+
     if (opcje.typ_wiadomosci ==
         DHCP_OFFER) {
 
-        if (ip_jest_zero(
+        /*
+         * OFFER tylko w stanie DISCOVER i tylko pierwszy - kolejne nie moga
+         * podmienic danych oferty, na podstawie ktorych wysylamy REQUEST.
+         */
+        if (stan !=
+                StanDHCP::DISCOVER ||
+            __atomic_load_n(
+                &dhcp_otrzymano_offer,
+                __ATOMIC_ACQUIRE)) {
+
+            return;
+        }
+
+        if (!ip_jest_unicast_hosta(
                 yiaddr)) {
 
             return;
@@ -5042,6 +5149,31 @@ void obsluz_dhcp(
         return;
     }
 
+    /*
+     * ACK/NAK tylko w stanie REQUEST i tylko od serwera wybranego w OFFER
+     * (RFC 2131: option 54 jest obowiazkowa w DHCPACK/DHCPNAK). Po zwiazaniu
+     * dzierzawy niezamowione ACK sa ignorowane.
+     */
+    if (stan !=
+            StanDHCP::REQUEST ||
+        __atomic_load_n(
+            &dhcp_otrzymano_ack,
+            __ATOMIC_ACQUIRE) ||
+        __atomic_load_n(
+            &dhcp_otrzymano_nak,
+            __ATOMIC_ACQUIRE)) {
+
+        return;
+    }
+
+    if (!opcje.ma_serwer ||
+        !ip_rowne(
+            opcje.serwer,
+            dhcp_offer_serwer)) {
+
+        return;
+    }
+
     if (opcje.typ_wiadomosci ==
         DHCP_NAK) {
 
@@ -5060,27 +5192,25 @@ void obsluz_dhcp(
         return;
     }
 
-    uint8_t nowy_ip[4] = {};
-
-    if (!ip_jest_zero(
-            yiaddr)) {
-
-        skopiuj_ip(
-            nowy_ip,
-            yiaddr
-        );
-    } else {
-        skopiuj_ip(
-            nowy_ip,
-            dhcp_offer_ip
-        );
-    }
-
-    if (ip_jest_zero(
-            nowy_ip)) {
+    /*
+     * ACK musi potwierdzac adres, o ktory prosilismy w REQUEST (option 50
+     * = adres z OFFER) i musi to byc zwykly adres unicast hosta.
+     */
+    if (!ip_jest_unicast_hosta(
+            yiaddr) ||
+        !ip_rowne(
+            yiaddr,
+            dhcp_offer_ip)) {
 
         return;
     }
+
+    uint8_t nowy_ip[4] = {};
+
+    skopiuj_ip(
+        nowy_ip,
+        yiaddr
+    );
 
     skopiuj_ip(
         nasz_ip,
@@ -5143,6 +5273,10 @@ void obsluz_dhcp(
         serwer_dns_ip[2] = 8;
         serwer_dns_ip[3] = 8;
     }
+
+    dhcp_ustaw_stan(
+        StanDHCP::ZWIAZANY
+    );
 
     __atomic_store_n(
         &dhcp_otrzymano_ack,
