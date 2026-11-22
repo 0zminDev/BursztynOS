@@ -18,6 +18,7 @@
 #include "uruchamianie_polityka.h"
 #include "pamiec.h"
 #include "test_dzwieku_trace.h"
+#include "../mm/zarezerwowane_va.h"
 
 #include <stdint.h>
 #include <stddef.h>
@@ -695,6 +696,17 @@ extern "C" const char* bur_blad_naglowka(
     }
 
     /*
+     * BUR v1 ma stale adresy w [16 MiB, 32 GiB), a w tym przedziale leza okna
+     * jadra (framebuffer, RAM dysk PSF, sterta jadra...). Mapowanie strony
+     * procesu w takim oknie podmienilo by PTE jadra - tak jak sprawdza to v2.
+     */
+    if (ZarezerwowaneVA::koliduje_z_jadrem(
+            naglowek.tekst_wirtualny,
+            koniec_tekstu_va)) {
+        return "text-overlaps-kernel-window";
+    }
+
+    /*
      * 2. Segment DATA (dane zainicjalizowane i BSS).
      * Opcjonalny: jezeli rozmiar > 0, to podlega pelnej kontroli limitow,
      * wyrownania stron, nienakladania sie i sumarycznego rozmiaru pamieci.
@@ -733,6 +745,12 @@ extern "C" const char* bur_blad_naglowka(
                 BAZA_STERTY_USER,
                 &koniec_danych_va)) {
             return "data-address-overflow-or-outside-user-image";
+        }
+
+        if (ZarezerwowaneVA::koliduje_z_jadrem(
+                naglowek.dane_wirtualny,
+                koniec_danych_va)) {
+            return "data-overlaps-kernel-window";
         }
 
         if (zakresy_nachodza(
