@@ -1177,6 +1177,20 @@ bool konfiguracja_ipv4_gotowa =
 uint16_t kolejny_ipv4_id =
     1;
 
+/*
+ * Zapas losowych IPv4 ID pobierany z CSPRNG paczkami, zeby nie wolac
+ * RDRAND/VirtIO-RNG dla kazdego wysylanego pakietu.
+ */
+constexpr size_t IPV4_ID_PULA =
+    32U;
+
+uint16_t ipv4_id_pula[
+    IPV4_ID_PULA
+] = {};
+
+size_t ipv4_id_pula_pozostalo =
+    0;
+
 /* XID losowany z CSPRNG dla kazdej transakcji DHCP (uruchom_klienta_dhcp). */
 uint32_t dhcp_xid =
     0;
@@ -1377,16 +1391,48 @@ bool siec_losowy_port(
     return false;
 }
 
+/*
+ * Losowe IPv4 ID dla kazdego pakietu. Wysylamy wylacznie datagramy
+ * atomowe (DF=1, brak fragmentacji, RFC 6864), wiec ID nie sluzy do
+ * reassembly - losowosc jedynie ukrywa licznik ruchu hosta (idle scan).
+ * Gdy CSPRNG zawiedzie, nie blokujemy calego ruchu: wracamy do licznika,
+ * co przy DF=1 nie wplywa na poprawnosc.
+ */
 uint16_t przydziel_ipv4_id() {
-    const uint16_t id =
-        kolejny_ipv4_id++;
+    size_t n =
+        ipv4_id_pula_pozostalo;
 
-    if (kolejny_ipv4_id == 0) {
-        kolejny_ipv4_id =
-            1;
+    if (n == 0 ||
+        n > IPV4_ID_PULA) {
+
+        if (!siec_losowe(
+                ipv4_id_pula,
+                sizeof(ipv4_id_pula))) {
+
+            ipv4_id_pula_pozostalo =
+                0;
+
+            const uint16_t id =
+                kolejny_ipv4_id++;
+
+            if (kolejny_ipv4_id == 0) {
+                kolejny_ipv4_id =
+                    1;
+            }
+
+            return id;
+        }
+
+        n =
+            IPV4_ID_PULA;
     }
 
-    return id;
+    --n;
+
+    ipv4_id_pula_pozostalo =
+        n;
+
+    return ipv4_id_pula[n];
 }
 
 /* =========================================================================
