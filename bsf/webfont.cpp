@@ -388,6 +388,10 @@ WebFontStatus reconstruct_glyf(const uint8_t *data, size_t length, unsigned expe
       glyf.put16(0xffff);
       for (unsigned k = 0; k < 4; ++k)
         glyf.put16(bbox.u16());
+      if (glyf.bad) { // reserve() failed: glyf.p + start may be past the buffer or null
+        status = WebFontStatus::TransformFailed;
+        break;
+      }
       x_min[g] = int16_t(rd16(glyf.p + start + 2));
       // Component records: copy, tracking WE_HAVE_INSTRUCTIONS.
       bool more = true, instr = false;
