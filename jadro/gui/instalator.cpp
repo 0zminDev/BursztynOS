@@ -234,7 +234,7 @@ void perform(){
         if(done)wallpapers_finished=true;
         // Przykladowe zdjecia (zdjecia.pak): best effort, kazdy blad konczy tylko ten etap (instalacja trwa).
         if(done&&galeria_phase==0){
-            klog_serial("[INSTALL] progress=75 stage=GALLERY");
+            {char l[64]="[INSTALL] progress=";size_t p=sizeof("[INSTALL] progress=")-1;append_u64(l,sizeof(l),&p,progress);append_text(l,sizeof(l),&p," stage=GALLERY");l[p]=0;klog_serial(l);}
             galeria_phase=galeria_instaluj_start(mbi_saved,&galeria_total)?1:2;
         }else if(done&&galeria_phase==1){
             bool g_gotowe=false;
