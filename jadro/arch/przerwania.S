@@ -385,6 +385,16 @@ wspolne_isr_wejscie:
     cld
 
     /*
+     * Interrupt gate nie czysci RFLAGS.AC, a Ring 3 moze je ustawic przez POPF.
+     * Bez tego SMAP bylby wylaczony w kazdym ISR/wyjatku przerwanym w procesie.
+     * PUSHF/POPF zamiast CLAC: dziala takze na CPU bez SMAP (CLAC = #UD).
+     * Oryginalne RFLAGS (rowniez AC okna STAC/CLAC jadra) wraca przez IRETQ.
+     */
+    pushfq
+    andq $~0x40000, (%rsp)
+    popfq
+
+    /*
      * RDI = RejestryStanowe*.
      */
     movq %rsp, %rdi
