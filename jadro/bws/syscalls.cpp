@@ -3236,6 +3236,20 @@ __attribute__((noinline)) uint64_t bws_czytaj_fragment_pliku(
     bws_zakoncz_biezacy_proces();
 }
 
+/*
+ * Brama SYSCALL (syscall.S) trafia tu, gdy zapisany RIP/RSP aplikacji nie
+ * nadaje sie do SYSRETQ. To blad procesu, nie jadra: konczymy tylko jego.
+ */
+extern "C" [[noreturn]] void syscalls_zakoncz_proces_po_zlym_powrocie() {
+    if (!scheduler_pid_uzytkownika(aktualny_pid)) {
+        SerialLog("[SYSCALL] zla rama powrotu poza procesem uzytkownika\n");
+        __builtin_trap();
+    }
+    SerialLog("[USER FAULT] niepoprawny RIP/RSP przy powrocie z BWS, proces zakonczony\n");
+    bws_zakoncz_biezacy_proces();
+    __builtin_unreachable();
+}
+
 /* =========================================================================
  * INICJALIZACJA SYSCALL / MSR
  * ========================================================================= */

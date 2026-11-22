@@ -97,6 +97,7 @@
  * ========================================================================= */
 
 .extern obsluga_wywolan_systemowych
+.extern syscalls_zakoncz_proces_po_zlym_powrocie
 
 /* =========================================================================
  * WEJSCIE LSTAR
@@ -398,8 +399,17 @@ brama_wywolan_systemowych:
      * integralnosci kernela. Nadal znajdujemy sie na poprawnym kernel stack
      * i z kernelowym GS.
      *
-     * Nie wykonujemy SYSRETQ z podejrzanym RCX/RSP.
+     * Nie wykonujemy SYSRETQ z podejrzanym RCX/RSP. RSP aplikacji jest w pelni
+     * kontrolowany przez Ring 3 (np. "xor %esp,%esp; syscall"), wiec zamiast
+     * UD2 w Ring 0 (panic calego systemu) konczymy tylko biezacy proces - tak
+     * samo jak przy SYS_EXIT. Rama jest juz czesciowo zdjeta, ale sciezka jest
+     * noreturn, wiec wystarczy wyrownac stos pod ABI wywolania C++.
      */
+    andq $-16, %rsp
+    sti
+    call syscalls_zakoncz_proces_po_zlym_powrocie
+
+    /* Nieosiagalne: funkcja C++ jest noreturn albo sama wywoluje panic. */
     cli
     ud2
 
