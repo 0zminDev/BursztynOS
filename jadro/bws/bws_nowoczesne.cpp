@@ -91,6 +91,11 @@ constexpr uint64_t SHM_SLOT_STRIDE = SHM_ROZMIAR_MAX;
 constexpr uint64_t SHM_GLOBAL_MAX = 8ULL * 1024ULL * 1024ULL;
 
 constexpr uint32_t IPC_ENDPOINTOW_MAX = 32;
+/* Limity na proces: tworzenie SHM/IPC nie wymaga zadnego PRAWO_*, wiec bez nich jeden
+   proces (takze sandbox) zajmowal wszystkie sloty i blokowal IPC calego systemu. */
+constexpr uint32_t SHM_OBIEKTOW_NA_PROCES = 4;
+constexpr uint64_t SHM_BAJTOW_NA_PROCES = 4ULL * 1024ULL * 1024ULL;
+constexpr uint32_t IPC_ENDPOINTOW_NA_PROCES = 8;
 constexpr uint32_t IPC_KOLEJKA_MAX = 16;
 constexpr uint32_t WATCH_MAX = 64;
 constexpr size_t SCIEZKA_MAX = 512;
@@ -270,6 +275,15 @@ uint64_t shm_create(proces_t& proces, uint64_t size, uint64_t flags64) {
     const uint64_t rounded = (size + STRONA - 1ULL) & ~(STRONA - 1ULL);
     if (rounded > SHM_GLOBAL_MAX || shm_zajete > SHM_GLOBAL_MAX - rounded)
         return 0;
+    uint32_t wlasne = 0;
+    uint64_t wlasne_bajty = 0;
+    for (uint32_t i = 0; i < SHM_OBIEKTOW_MAX; ++i)
+        if (shm[i].aktywny && shm[i].owner_pid == aktualny_pid) {
+            ++wlasne;
+            wlasne_bajty += static_cast<uint64_t>(shm[i].stron) * STRONA;
+        }
+    if (wlasne >= SHM_OBIEKTOW_NA_PROCES || wlasne_bajty > SHM_BAJTOW_NA_PROCES - rounded)
+        return 0;
     uint32_t slot = SHM_OBIEKTOW_MAX;
     for (uint32_t i = 0; i < SHM_OBIEKTOW_MAX; ++i)
         if (!shm[i].aktywny) { slot = i; break; }
@@ -437,6 +451,10 @@ void ipc_zwolnij_ref_wiadomosci(const IpcWiadomosc& m) {
 }
 
 uint64_t ipc_create() {
+    uint32_t wlasne = 0;
+    for (uint32_t i = 0; i < IPC_ENDPOINTOW_MAX; ++i)
+        if (endpoints[i].aktywny && endpoints[i].owner_pid == aktualny_pid) ++wlasne;
+    if (wlasne >= IPC_ENDPOINTOW_NA_PROCES) return 0;
     for (uint32_t i = 0; i < IPC_ENDPOINTOW_MAX; ++i) {
         if (endpoints[i].aktywny) continue;
         IpcWiadomosc* kolejka = static_cast<IpcWiadomosc*>(
