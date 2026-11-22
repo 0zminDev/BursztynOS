@@ -202,6 +202,9 @@ def install(g,target,sentinel,before_target,before_sentinel):
     import sys
     sys.path.insert(0,str(ROOT/'narzedzia'))
     from bsf_process_observer import ProcessObserver
+    # Uklad pamieci procesu instalatora zalezy od biezacego zrodla, wiec plik
+    # dla obserwatora odswiezamy zawsze (jak test_bsf_installed_qemu.py).
+    subprocess.run(['make','bsf-installer-observer'],cwd=ROOT,stdout=subprocess.DEVNULL,check=True)
     g.wait('[INSTALL] Installer mode ready',timeout=300)
     g.wait('[SYSTEM] Pulpit gotowy',timeout=180)
     layout=json.loads((ROOT/'.bsf-test/installer-observer.json').read_text())
