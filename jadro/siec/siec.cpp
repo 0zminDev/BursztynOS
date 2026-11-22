@@ -75,6 +75,12 @@ void wypisz_log(
     const char* tekst
 );
 
+/* CSPRNG jadra (jadro/bws/bezpieczenstwo.cpp). Fail-closed: false = brak entropii. */
+extern "C" bool bursztyn_krypto_wypelnij_losowe(
+    uint8_t* bufor,
+    size_t dlugosc
+);
+
 /* =========================================================================
  * 2. STALE PROTOKOLOW
  * ========================================================================= */
@@ -185,9 +191,6 @@ constexpr uint16_t PORT_EPHEMERAL_MIN =
 
 constexpr uint16_t PORT_EPHEMERAL_START =
     50000U;
-
-constexpr uint16_t PORT_DNS_START =
-    53000U;
 
 constexpr uint8_t TCP_FLAG_FIN =
     0x01U;
@@ -1163,12 +1166,6 @@ uint16_t kolejny_ipv4_id =
 uint16_t nastepny_port_ephemeral =
     PORT_EPHEMERAL_START;
 
-uint16_t nastepny_port_dns =
-    PORT_DNS_START;
-
-uint16_t nastepny_dns_id =
-    0xA001U;
-
 uint32_t dhcp_xid =
     UINT32_C(0xB0550001);
 
@@ -1260,6 +1257,80 @@ bool ip_w_naszej_podsieci(
     }
 
     return true;
+}
+
+/*
+ * Jedyne zrodlo losowosci stosu sieciowego (DNS ID/port, TCP ISN/port,
+ * DHCP XID, IPv4 ID). Fail-closed: przy bledzie bufor jest wyzerowany,
+ * a wolajacy musi odmowic operacji zamiast uzyc przewidywalnej wartosci.
+ */
+bool siec_losowe(
+    void* wyjscie,
+    size_t dlugosc
+) {
+    if (!wyjscie) {
+        return false;
+    }
+
+    if (!bursztyn_krypto_wypelnij_losowe(
+            static_cast<uint8_t*>(
+                wyjscie),
+            dlugosc)) {
+
+        wyzeruj(
+            wyjscie,
+            dlugosc
+        );
+
+        return false;
+    }
+
+    return true;
+}
+
+/*
+ * Losowy port efemeryczny z zakresu 49152..65535 (RFC 6056, alg. 1).
+ * `unikaj` to port uzywany przez poprzednia/biezaca sesje tego samego
+ * protokolu - nie wracamy na niego, zeby spoznione pakiety starej sesji
+ * nie trafily do nowej.
+ */
+bool siec_losowy_port(
+    uint16_t unikaj,
+    uint16_t* wynik
+) {
+    if (!wynik) {
+        return false;
+    }
+
+    for (unsigned proba = 0;
+         proba < 8U;
+         ++proba) {
+
+        uint16_t los =
+            0;
+
+        if (!siec_losowe(
+                &los,
+                sizeof(los))) {
+
+            return false;
+        }
+
+        const uint16_t port =
+            static_cast<uint16_t>(
+                PORT_EPHEMERAL_MIN +
+                (los & 0x3FFFU)
+            );
+
+        if (port != unikaj) {
+            *wynik =
+                port;
+
+            return true;
+        }
+    }
+
+    return false;
 }
 
 uint16_t przydziel_port(
@@ -2697,6 +2768,23 @@ uint16_t dns_oczekiwany_port =
 
 uint8_t dns_oczekiwany_serwer[4] = {};
 
+/*
+ * QNAME (format wire) biezacego zapytania. Odpowiedz musi powtorzyc
+ * dokladnie to pytanie (RFC 5452 9.1), inaczej jej nie przyjmujemy.
+ */
+uint8_t dns_oczekiwana_nazwa[
+    DNS_NAZWA_MAX + 2U
+] = {};
+
+size_t dns_oczekiwana_nazwa_len =
+    0;
+
+constexpr uint16_t DNS_TYP_A =
+    1U;
+
+constexpr uint16_t DNS_KLASA_IN =
+    1U;
+
 bool znak_dns_poprawny(
     char c
 ) {
@@ -2915,6 +3003,110 @@ bool dns_pomin_nazwe(
     return false;
 }
 
+uint8_t dns_male_ascii(
+    uint8_t c
+) {
+    if (c >= 'A' &&
+        c <= 'Z') {
+
+        return static_cast<uint8_t>(
+            c + ('a' - 'A')
+        );
+    }
+
+    return c;
+}
+
+/*
+ * Sprawdza sekcje pytania odpowiedzi: QNAME (bez rozroznienia wielkosci
+ * liter ASCII, RFC 4343) oraz QTYPE=A / QCLASS=IN musza zgadzac sie
+ * z wyslanym zapytaniem. Kompresja w pytaniu nie ma sensu (wskaznik
+ * moglby wskazywac tylko na naglowek), wiec jej nie dopuszczamy.
+ * Przy sukcesie *offset wskazuje za pytaniem.
+ */
+bool dns_pytanie_zgodne(
+    const uint8_t* pakiet,
+    size_t dlugosc,
+    size_t* offset
+) {
+    if (!pakiet ||
+        !offset ||
+        dns_oczekiwana_nazwa_len == 0 ||
+        *offset > dlugosc ||
+        dlugosc - *offset <
+            dns_oczekiwana_nazwa_len + 4U) {
+
+        return false;
+    }
+
+    const uint8_t* q =
+        pakiet +
+        *offset;
+
+    size_t i =
+        0;
+
+    while (i <
+           dns_oczekiwana_nazwa_len) {
+
+        const uint8_t len =
+            dns_oczekiwana_nazwa[i];
+
+        /*
+         * Bajt dlugosci etykiety (lub koncowe 0) musi byc identyczny;
+         * to odrzuca tez wskazniki kompresji (0xC0).
+         */
+        if (q[i] != len) {
+            return false;
+        }
+
+        ++i;
+
+        if (len == 0) {
+            break;
+        }
+
+        if (static_cast<size_t>(len) >
+            dns_oczekiwana_nazwa_len - i) {
+
+            return false;
+        }
+
+        for (size_t j = 0;
+             j < len;
+             ++j, ++i) {
+
+            if (dns_male_ascii(q[i]) !=
+                dns_male_ascii(
+                    dns_oczekiwana_nazwa[i])) {
+
+                return false;
+            }
+        }
+    }
+
+    if (i !=
+        dns_oczekiwana_nazwa_len) {
+
+        return false;
+    }
+
+    if (czytaj_be16(
+            q + i) !=
+            DNS_TYP_A ||
+        czytaj_be16(
+            q + i + 2U) !=
+            DNS_KLASA_IN) {
+
+        return false;
+    }
+
+    *offset +=
+        i + 4U;
+
+    return true;
+}
+
 bool wyslij_zapytanie_dns(
     const char* domena,
     const uint8_t dns_ip[4],
@@ -3129,19 +3321,51 @@ extern "C" bool kernel_siec_dns(
         return false;
     }
 
-    const uint16_t id =
-        ++nastepny_dns_id;
+    /*
+     * Losowy 16-bitowy ID i losowy port zrodlowy dla kazdego zapytania
+     * (RFC 5452 9.2). Bez entropii odmawiamy zapytania (fail-closed).
+     */
+    static uint16_t poprzedni_port =
+        0;
 
-    if (nastepny_dns_id == 0) {
-        nastepny_dns_id =
-            1;
+    uint16_t id =
+        0;
+
+    uint16_t port =
+        0;
+
+    if (!siec_losowe(
+            &id,
+            sizeof(id)) ||
+        !siec_losowy_port(
+            poprzedni_port,
+            &port)) {
+
+        wypisz_log("[DNS] Brak entropii z CSPRNG - zapytanie odrzucone.");
+
+        return false;
     }
 
-    const uint16_t port =
-        przydziel_port(
-            &nastepny_port_dns,
-            PORT_DNS_START
-        );
+    size_t qname_len =
+        0;
+
+    if (!koduj_nazwe_dns(
+            domena,
+            dns_oczekiwana_nazwa,
+            sizeof(dns_oczekiwana_nazwa),
+            &qname_len)) {
+
+        dns_oczekiwana_nazwa_len =
+            0;
+
+        return false;
+    }
+
+    dns_oczekiwana_nazwa_len =
+        qname_len;
+
+    poprzedni_port =
+        port;
 
     wypisz_log("[DNS] query host=");
     wypisz_log(domena);
@@ -3175,6 +3399,9 @@ extern "C" bool kernel_siec_dns(
             id,
             port)) {
 
+        dns_oczekiwany_port =
+            0;
+
         return false;
     }
 
@@ -3194,6 +3421,9 @@ extern "C" bool kernel_siec_dns(
 
             wypisz_ip_log("[DNS] A=", dns_resolved_ip);
 
+            dns_oczekiwany_port =
+                0;
+
             return
                 !ip_jest_zero(
                     wyjsciowy_ip
@@ -3203,6 +3433,13 @@ extern "C" bool kernel_siec_dns(
         siec_odstap_w_czekaniu();
     }
     wypisz_log("[DNS] response timeout.");
+
+    /*
+     * Zamykamy okno zapytania - spoznione odpowiedzi nie moga juz ustawic
+     * wyniku dla nastepnego wywolania.
+     */
+    dns_oczekiwany_port =
+        0;
 
     return false;
 }
@@ -4952,6 +5189,18 @@ void obsluz_dns(
         return;
     }
 
+    /*
+     * Brak aktywnego zapytania albo wynik juz przyjety - pierwsza poprawna
+     * odpowiedz wygrywa, kolejne nie moga nadpisac dns_resolved_ip.
+     */
+    if (dns_oczekiwany_port == 0 ||
+        __atomic_load_n(
+            &dns_odebrano,
+            __ATOMIC_ACQUIRE)) {
+
+        return;
+    }
+
     if (!ip_rowne(
             widok.ip->zrodlo_ip,
             dns_oczekiwany_serwer) ||
@@ -5004,13 +5253,17 @@ void obsluz_dns(
     (void)arcount;
 #endif
 
+    /*
+     * Wysylamy dokladnie jedno pytanie, wiec odpowiedz musi miec QDCOUNT=1
+     * i powtarzac to samo pytanie (nazwa, QTYPE=A, QCLASS=IN).
+     */
     if (id !=
             dns_oczekiwane_id ||
         (flags &
          0x8000U) == 0 ||
         (flags &
          0x000FU) != 0 ||
-        qdcount == 0) {
+        qdcount != 1) {
 
         return;
     }
@@ -5018,26 +5271,12 @@ void obsluz_dns(
     size_t pos =
         12U;
 
-    for (uint16_t i = 0;
-         i < qdcount;
-         ++i) {
+    if (!dns_pytanie_zgodne(
+            payload,
+            payload_len,
+            &pos)) {
 
-        if (!dns_pomin_nazwe(
-                payload,
-                payload_len,
-                &pos)) {
-
-            return;
-        }
-
-        if (pos + 4U >
-            payload_len) {
-
-            return;
-        }
-
-        pos +=
-            4U;
+        return;
     }
 
     for (uint16_t i = 0;
